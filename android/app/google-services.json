@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "934224826106",
+    "project_id": "hirfahome",
+    "storage_bucket": "hirfahome.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:934224826106:android:2e65a83580f2e9e5808343",
+        "android_client_info": {
+          "package_name": "com.example.hirfahome"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7Nn6LVMxDMrOrJ33F2xrcMmbRsTEBcIk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

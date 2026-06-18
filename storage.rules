@@ -1,0 +1,84 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // =============================================
+    // Helper Functions
+    // =============================================
+
+    /// Returns true if the request is from an authenticated user.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /// Returns the role stored in the user's Firestore document.
+    function getUserRole() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    /// Returns true if the authenticated user has the 'admin' role.
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    /// Returns true if the authenticated user has the 'artisan' role.
+    function isArtisan() {
+      return isAuthenticated() && getUserRole() == 'artisan';
+    }
+
+    // =============================================
+    // Profile Pictures — profiles/{userId}/{allPaths=**}
+    // =============================================
+    // - Users can read/write to their own profile folder.
+    // - Admin can read all profile files.
+    match /profiles/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // =============================================
+    // User Documents & Portfolio — users/{userId}/{allPaths=**}
+    // =============================================
+    // Used by profile_screen.dart for CIN verification documents
+    // (users/{uid}/documents/cin.jpg) and artisan portfolio uploads
+    // (users/{uid}/portfolio/*.jpg).
+    // - Owner can read/write their own folder.
+    // - Any authenticated user can read (portfolio is a public showcase;
+    //   CIN documents are only ever shown on the admin verification
+    //   screen, which is gated by the admin role at the app layer).
+    // - Admin can read all.
+    match /users/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // =============================================
+    // Request Attachments — demandes/{userId}/{allPaths=**}
+    // =============================================
+    // - Users can read/write to their own demandes folder.
+    // - Admin can read all demandes files.
+    match /demandes/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // =============================================
+    // Artisan Portfolios — portfolios/{userId}/{allPaths=**}
+    // =============================================
+    // - Only artisans can upload to their own portfolio folder.
+    // - Anyone authenticated can read portfolios (public showcase).
+    // - Admin can read all portfolio files.
+    match /portfolios/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId && isArtisan();
+    }
+
+    // =============================================
+    // Admin — Catch-all read access
+    // =============================================
+    // Admin can read any path in Storage.
+    match /{allPaths=**} {
+      allow read: if isAdmin();
+    }
+  }
+}

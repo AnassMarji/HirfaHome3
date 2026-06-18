@@ -1,0 +1,207 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =============================================
+    // Helper Functions
+    // =============================================
+
+    /// Returns true if the request is from an authenticated user.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /// Returns the role stored in the user's Firestore document.
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    /// Returns true if the authenticated user has the 'admin' role.
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    /// Returns true if the authenticated user has the 'client' role.
+    function isClient() {
+      return isAuthenticated() && getUserRole() == 'client';
+    }
+
+    /// Returns true if the authenticated user has the 'artisan' role.
+    function isArtisan() {
+      return isAuthenticated() && getUserRole() == 'artisan';
+    }
+
+    /// Returns true if the authenticated user is the owner of the document.
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    /// Returns the set of fields that changed between the incoming write
+    /// and the existing document.
+    function affectedFields() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // =============================================
+    // Users Collection
+    // =============================================
+    // NOTE: In this app, the 'users' collection doubles as the artisan
+    // public profile (specialite, tarifs, portfolio, availability, etc. are
+    // all stored directly on the user document — there is no separate
+    // artisan-profile collection used by the app for browsing).
+    // - A user can always read/write their own document.
+    // - Any authenticated user can read an *artisan* profile document
+    //   (needed for search, detail screen, chat counterpart lookup).
+    // - Admin can read/write any user document.
+    match /users/{userId} {
+      allow read: if isOwner(userId)
+                  || isAdmin()
+                  || (isAuthenticated() && resource.data.role == 'artisan');
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // =============================================
+    // Artisans Collection (legacy/secondary doc)
+    // =============================================
+    // A secondary, minimal artisan doc is created at registration time and
+    // removed by the admin on rejection/deletion. Kept read-only for
+    // authenticated users; only the owning artisan or admin can write.
+    match /artisans/{artisanId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+      allow update: if isOwner(artisanId)
+                    && !affectedFields().hasAny(['verifie', 'note']);
+    }
+
+    // =============================================
+    // Demandes Collection (Requests)
+    // =============================================
+    // - Client can create a request if clientId matches their uid.
+    // - Client can read their own requests (clientId == uid).
+    // - Artisan can read requests assigned to them (artisanId == uid) AND
+    //   the open/unassigned pool (artisanId == '' && statut == 'envoye')
+    //   so they can see new incoming demandes to accept.
+    // - Artisan can accept an unassigned demande (claim artisanId) or
+    //   update the status/rating fields of one already assigned to them.
+    // - Admin can read and write all demandes.
+    match /demandes/{demandeId} {
+      allow read: if isAdmin()
+                  || (isClient()  && resource.data.clientId == request.auth.uid)
+                  || (isArtisan() && (
+                        resource.data.artisanId == request.auth.uid ||
+                        (resource.data.artisanId == '' && resource.data.statut == 'envoye')
+                      ));
+
+      allow create: if isAdmin()
+                    || (isClient() && request.resource.data.clientId == request.auth.uid);
+
+      allow update: if isAdmin()
+                    || (isArtisan() && (
+                          // Accepting an open demande.
+                          (resource.data.artisanId == ''
+                            && request.resource.data.artisanId == request.auth.uid
+                            && affectedFields().hasOnly(['artisanId', 'statut']))
+                          ||
+                          // Managing / rating a demande already assigned to them.
+                          (resource.data.artisanId == request.auth.uid
+                            && affectedFields().hasOnly(
+                                ['statut', 'artisanId', 'date_intervention', 'artisanRating', 'artisanComment']))
+                        ))
+                    || (isClient() && resource.data.clientId == request.auth.uid
+                        && affectedFields().hasOnly(['clientRating', 'clientComment']));
+
+      allow delete: if isAdmin()
+                    || (isClient() && resource.data.clientId == request.auth.uid
+                        && resource.data.statut == 'envoye');
+    }
+
+    // =============================================
+    // Chat Rooms / Messages Collection
+    // =============================================
+    // Room ids are built as the two participant uids joined with '_',
+    // sorted alphabetically (see FirestoreChatRepository._getChatRoomId).
+    match /chat_rooms/{roomId} {
+      function isRoomParticipant() {
+        return roomId.split('_')[0] == request.auth.uid
+            || roomId.split('_')[1] == request.auth.uid;
+      }
+
+      allow read, write: if isAuthenticated() && isRoomParticipant();
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && isRoomParticipant();
+        allow create: if isAuthenticated() && isRoomParticipant()
+                      && request.resource.data.senderId == request.auth.uid;
+        allow update: if isAuthenticated() && isRoomParticipant();
+        allow delete: if isAdmin();
+      }
+    }
+
+    // =============================================
+    // Reviews (Avis) Collection
+    // =============================================
+    // - Authenticated clients can create a review.
+    // - clientId on the review must match the writer's uid.
+    // - artisanId must reference an existing user document.
+    // - Any authenticated user can read reviews.
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isClient()
+                    && request.resource.data.clientId == request.auth.uid
+                    && exists(/databases/$(database)/documents/users/$(request.resource.data.artisanId));
+    }
+
+    // =============================================
+    // Ratings Collection
+    // =============================================
+    // - Client or artisan can rate the counterpart on a completed demande.
+    // - raterId must match the writer's uid.
+    // - Any authenticated user can read ratings (needed to recompute
+    //   average ratings client-side).
+    match /ratings/{ratingId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isAuthenticated()
+                    && request.resource.data.raterId == request.auth.uid;
+
+      allow update: if isAuthenticated()
+                    && resource.data.raterId == request.auth.uid;
+    }
+
+    // =============================================
+    // Notifications Collection (FCM relay queue)
+    // =============================================
+    // Any authenticated user may enqueue a notification (e.g. when sending
+    // a chat message or a demande). No client ever needs to read this
+    // collection back — it is meant to be consumed by a backend/Cloud
+    // Function. Reads/updates/deletes are admin-only.
+    match /notifications/{notificationId} {
+      allow create: if isAuthenticated();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // =============================================
+    // Config Collection
+    // =============================================
+    // - Anyone (even unauthenticated) can read config docs (e.g. the
+    //   enabled-categories toggle map used by the search screen).
+    // - Only admin can write.
+    match /config/{configId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // =============================================
+    // Categories Collection
+    // =============================================
+    // - Anyone (even unauthenticated) can read categories.
+    // - Only admin can write.
+    match /categories/{categoryId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+  }
+}
