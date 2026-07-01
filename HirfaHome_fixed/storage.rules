@@ -1,0 +1,137 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // =============================================
+    // Helper Functions
+    // =============================================
+
+    /// Returns true if the request is from an authenticated user.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /// Returns the role stored in the user's Firestore document.
+    function getUserRole() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    /// Returns true if the authenticated user has the 'admin' role.
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    /// Returns true if the authenticated user has the 'artisan' role.
+    function isArtisan() {
+      return isAuthenticated() && getUserRole() == 'artisan';
+    }
+
+    /// Returns true if the file is an image (by extension).
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    /// Returns true if the file size is under 5MB (image upload limit).
+    function isUnder5MB() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+
+    /// Returns true if the file size is under 10MB (document upload limit).
+    function isUnder10MB() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // =============================================
+    // Profile Pictures — profiles/{userId}/{allPaths=**}
+    // =============================================
+    // - Users can read/write to their own profile folder.
+    // - Any authenticated user can read profile pictures (public avatar).
+    // - Admin can read all profile files.
+    // - Only image files under 5MB allowed.
+    match /profiles/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated();  // Public avatars visible to authenticated users
+      allow write: if isAuthenticated()
+                    && request.auth.uid == userId
+                    && isImage()
+                    && isUnder5MB();
+    }
+
+    // =============================================
+    // CIN / Identity Documents — cin_documents/{userId}/cin.jpg
+    // =============================================
+    // CRITICAL: CIN (national ID) is highly sensitive — only the owner
+    // and admins can read it. No other user should ever access these.
+    // - Owner can read/write their own CIN.
+    // - Admin can read all CIN documents (for verification).
+    // - NO other user can read or write.
+    // - Files must be images under 10MB.
+    match /cin_documents/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated()
+                    && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated()
+                    && request.auth.uid == userId
+                    && isImage()
+                    && isUnder10MB();
+    }
+
+    // =============================================
+    // Artisan Portfolios — portfolios/{userId}/{allPaths=**}
+    // =============================================
+    // - Only artisans can upload to their own portfolio folder.
+    // - Anyone authenticated can read portfolios (public showcase).
+    // - Admin can read all portfolio files.
+    // - Only image files under 5MB allowed.
+    match /portfolios/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated()
+                    && request.auth.uid == userId
+                    && isArtisan()
+                    && isImage()
+                    && isUnder5MB();
+    }
+
+    // =============================================
+    // Request Attachments — demandes/{userId}/{allPaths=**}
+    // =============================================
+    // - Users can read/write to their own demandes folder.
+    // - Artisan assigned to the demande can read the attachments.
+    // - Admin can read all demandes files.
+    // - Only image files under 5MB allowed.
+    // NOTE: This path is keyed by clientId per current implementation.
+    // A future refactor should use demandes/{demandeId}/ for proper access
+    // control (artisan needs to read attachments for accepted demandes).
+    match /demandes/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated()
+                    && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated()
+                    && request.auth.uid == userId
+                    && isImage()
+                    && isUnder5MB();
+    }
+
+    // =============================================
+    // User Documents (legacy path — keep for backward compat)
+    // =============================================
+    // Used by profile_screen.dart for CIN verification documents at
+    // users/{uid}/documents/cin.jpg.
+    // SECURITY: documents/ subfolder is admin-only read (CIN is sensitive).
+    // portfolio/ subfolder is public read.
+    match /users/{userId}/{allPaths=**} {
+      allow read:  if isAuthenticated()
+                    && (request.auth.uid == userId || isAdmin()
+                        || allPaths.matches('portfolio/.*'));
+      allow write: if isAuthenticated()
+                    && request.auth.uid == userId
+                    && isImage()
+                    && isUnder10MB();
+    }
+
+    // =============================================
+    // Admin — Catch-all read access
+    // =============================================
+    // Admin can read any path in Storage.
+    match /{allPaths=**} {
+      allow read: if isAdmin();
+    }
+  }
+}

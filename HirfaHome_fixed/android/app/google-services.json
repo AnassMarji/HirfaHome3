@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "934224826106",
+    "project_id": "hirfahome",
+    "storage_bucket": "hirfahome.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:934224826106:android:2e65a83580f2e9e5808343",
+        "android_client_info": {
+          "package_name": "com.example.hirfahome"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "934224826106-nec11jvspfun2cokn1utaukmqu898lcs.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.hirfahome",
+            "certificate_hash": "89d27776fddd545ce49c9b3b7ba654a8c87ab615"
+          }
+        },
+        {
+          "client_id": "934224826106-nikqgmhrs3vahc4kv8m4s5qfk4h6gdt5.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7Nn6LVMxDMrOrJ33F2xrcMmbRsTEBcIk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "934224826106-nikqgmhrs3vahc4kv8m4s5qfk4h6gdt5.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,306 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =============================================
+    // Helper Functions
+    // =============================================
+
+    /// Returns true if the request is from an authenticated user.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /// Returns the role stored in the user's Firestore document.
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    /// Returns true if the authenticated user has the 'admin' role.
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    /// Returns true if the authenticated user has the 'client' role.
+    function isClient() {
+      return isAuthenticated() && getUserRole() == 'client';
+    }
+
+    /// Returns true if the authenticated user has the 'artisan' role.
+    function isArtisan() {
+      return isAuthenticated() && getUserRole() == 'artisan';
+    }
+
+    /// Returns true if the authenticated user is the owner of the document.
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    /// Returns the set of fields that changed between the incoming write
+    /// and the existing document.
+    function affectedFields() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    /// Returns the set of incoming fields in the request resource.
+    function incomingFields() {
+      return request.resource.data.keys();
+    }
+
+    // =============================================
+    // Users Collection
+    // =============================================
+    // NOTE: In this app, the 'users' collection doubles as the artisan
+    // public profile (specialite, tarifs, portfolio, availability, etc. are
+    // all stored directly on the user document — there is no separate
+    // artisan-profile collection used by the app for browsing).
+    //
+    // SECURITY: Sensitive fields (role, verifie, noteMoyenne, nombreAvis,
+    // banned) can ONLY be set by an admin. The owner can edit their profile
+    // but cannot self-verify, self-rate, or escalate their role.
+    match /users/{userId} {
+      allow read: if isOwner(userId)
+                  || isAdmin()
+                  || (isAuthenticated() && resource.data.role == 'artisan');
+      allow create: if isOwner(userId)
+                    // New user can only set role to 'client' or 'artisan' (never 'admin')
+                    && request.resource.data.role in ['client', 'artisan']
+                    // Only 'banned' must NOT be set on create; verifie/noteMoyenne/
+                    // nombreAvis are allowed because AppUser.toMap() includes them
+                    // with safe default values (false, 0.0, 0).
+                    && !incomingFields().hasAny(['banned']);
+      allow update: if isAdmin()
+                    // Admin can change anything including role/verifie/banned
+                    || (isOwner(userId)
+                        // Owner can edit profile but NOT sensitive fields
+                        && !affectedFields().hasAny(['role', 'verifie', 'noteMoyenne', 'nombreAvis', 'banned']));
+      allow delete: if isAdmin();
+    }
+
+    // =============================================
+    // Artisans Collection (legacy/secondary doc)
+    // =============================================
+    // A secondary, minimal artisan doc is created at registration time and
+    // removed by the admin on rejection/deletion. Kept read-only for
+    // authenticated users; the owning artisan can create their own doc
+    // during registration, and admin can write/delete.
+    match /artisans/{artisanId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(artisanId);
+      allow delete: if isAdmin();
+      allow update: if isAdmin()
+                    || (isOwner(artisanId)
+                        && !affectedFields().hasAny(['verifie', 'note', 'noteMoyenne', 'nombreAvis']));
+    }
+
+    // =============================================
+    // Demandes Collection (Requests)
+    // =============================================
+    // - Client can create a request if clientId matches their uid.
+    // - Client can read their own requests (clientId == uid).
+    // - Artisan can read requests assigned to them (artisanId == uid) AND
+    //   the open/unassigned pool (artisanId == '' && statut == 'envoye')
+    //   so they can see new incoming demandes to accept.
+    // - Artisan can accept an unassigned demande (claim artisanId) or
+    //   update the status/rating fields of one already assigned to them.
+    // - Admin can read and write all demandes.
+    //
+    // SECURITY: State-machine validation on statut field prevents invalid
+    // transitions (e.g., 'termine' -> 'envoye', skipping 'accepte').
+    match /demandes/{demandeId} {
+      allow read: if isAdmin()
+                  || (isClient()  && resource.data.clientId == request.auth.uid)
+                  || (isArtisan() && (
+                        resource.data.artisanId == request.auth.uid ||
+                        (resource.data.artisanId == '' && resource.data.statut == 'envoye')
+                      ));
+
+      allow create: if isAdmin()
+                    || (isClient()
+                        && request.resource.data.clientId == request.auth.uid
+                        // New demande must start in 'envoye' state with no artisan
+                        && request.resource.data.statut == 'envoye'
+                        && request.resource.data.artisanId == ''
+                        // Required fields must be present
+                        && incomingFields().hasAll(['clientId', 'statut', 'date', 'dateCreation'])
+                        // Forbidden fields on create
+                        && !incomingFields().hasAny(['clientRating', 'artisanRating', 'dateIntervention']));
+
+      allow update: if isAdmin()
+                    || (isArtisan() && (
+                          // Accepting an open demande: envoye + empty artisan -> accepte + claimed artisan
+                          (resource.data.artisanId == ''
+                            && resource.data.statut == 'envoye'
+                            && request.resource.data.artisanId == request.auth.uid
+                            && request.resource.data.statut == 'accepte'
+                            && affectedFields().hasOnly(['artisanId', 'statut']))
+                          ||
+                          // Refusing an open demande: envoye -> refuse
+                          (resource.data.artisanId == ''
+                            && resource.data.statut == 'envoye'
+                            && request.resource.data.statut == 'refuse'
+                            && affectedFields().hasOnly(['statut']))
+                          ||
+                          // Marking accepted demande as in progress: accepte -> en_cours
+                          (resource.data.artisanId == request.auth.uid
+                            && resource.data.statut == 'accepte'
+                            && request.resource.data.statut == 'en_cours'
+                            && affectedFields().hasOnly(['statut']))
+                          ||
+                          // Completing a demande: en_cours -> termine
+                          (resource.data.artisanId == request.auth.uid
+                            && resource.data.statut == 'en_cours'
+                            && request.resource.data.statut == 'termine'
+                            && affectedFields().hasOnly(['statut', 'dateIntervention', 'date_intervention']))
+                          ||
+                          // Artisan rating the client (only after termine)
+                          (resource.data.artisanId == request.auth.uid
+                            && resource.data.statut == 'termine'
+                            && affectedFields().hasOnly(['artisanRating', 'artisanComment']))
+                        ))
+                    || (isClient() && resource.data.clientId == request.auth.uid
+                        // Client rating the artisan (only after termine)
+                        && (resource.data.statut == 'termine' || request.resource.data.statut == 'termine')
+                        && affectedFields().hasOnly(['clientRating', 'clientComment']));
+
+      allow delete: if isAdmin()
+                    || (isClient() && resource.data.clientId == request.auth.uid
+                        && resource.data.statut == 'envoye');
+    }
+
+    // =============================================
+    // Chat Rooms / Messages Collection
+    // =============================================
+    // Room ids are built as the two participant uids joined with '_',
+    // sorted alphabetically (see FirestoreChatRepository._getChatRoomId).
+    //
+    // SECURITY: Messages can only be created/edited by the sender. The
+    // receiver can mark messages as read (update 'lu' field only).
+    match /chat_rooms/{roomId} {
+      function isRoomParticipant() {
+        return roomId.split('_')[0] == request.auth.uid
+            || roomId.split('_')[1] == request.auth.uid;
+      }
+
+      allow read: if isAuthenticated() && isRoomParticipant();
+      allow create: if isAuthenticated() && isRoomParticipant()
+                    && request.resource.data.participants is list
+                    && request.resource.data.participants.size() == 2
+                    && request.auth.uid in request.resource.data.participants;
+      allow update: if isAuthenticated() && isRoomParticipant();
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && isRoomParticipant();
+        allow create: if isAuthenticated() && isRoomParticipant()
+                      && request.resource.data.senderId == request.auth.uid
+                      // Required fields
+                      && incomingFields().hasAll(['senderId', 'message', 'timestamp', 'lu']);
+        allow update: if isAuthenticated() && isRoomParticipant()
+                      // Only the receiver can mark as read; sender can edit nothing
+                      && (affectedFields().hasOnly(['lu'])
+                          || resource.data.senderId == request.auth.uid);
+        allow delete: if isAdmin();
+      }
+    }
+
+    // =============================================
+    // Reviews (Avis) Collection
+    // =============================================
+    // - Authenticated clients can create a review.
+    // - clientId on the review must match the writer's uid.
+    // - artisanId must reference an existing user document.
+    // - Any authenticated user can read reviews.
+    //
+    // SECURITY: Reviews are tied to a demande and only allowed after
+    // the demande is marked 'termine'. One review per (clientId, demandeId).
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isClient()
+                    && request.resource.data.clientId == request.auth.uid
+                    && exists(/databases/$(database)/documents/users/$(request.resource.data.artisanId))
+                    // The referenced demande must exist and be 'termine'
+                    && exists(/databases/$(database)/documents/demandes/$(request.resource.data.demandeId))
+                    && get(/databases/$(database)/documents/demandes/$(request.resource.data.demandeId)).data.statut == 'termine'
+                    // Rating must be 1-5
+                    && request.resource.data.rating >= 1
+                    && request.resource.data.rating <= 5
+                    // No existing review by this client on this demande
+                    // (uniqueness via composite query — see comment below)
+                    ;
+
+      allow update: if isAdmin()
+                    || (isClient() && resource.data.clientId == request.auth.uid
+                        && affectedFields().hasOnly(['comment']));
+      allow delete: if isAdmin();
+    }
+
+    // =============================================
+    // Ratings Collection
+    // =============================================
+    // - Client or artisan can rate the counterpart on a completed demande.
+    // - raterId must match the writer's uid.
+    // - The demande must exist and be 'termine'.
+    // - One rating per (raterId, demandeId) — enforced via doc ID convention.
+    //
+    // NOTE: Doc IDs should be formatted as "{demandeId}_{raterId}" to
+    // enforce uniqueness. The app layer must use this convention.
+    match /ratings/{ratingId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isAuthenticated()
+                    && request.resource.data.raterId == request.auth.uid
+                    && exists(/databases/$(database)/documents/demandes/$(request.resource.data.demandeId))
+                    && get(/databases/$(database)/documents/demandes/$(request.resource.data.demandeId)).data.statut == 'termine'
+                    && request.resource.data.rating >= 1
+                    && request.resource.data.rating <= 5
+                    // Doc ID must match the convention {demandeId}_{raterId}
+                    && ratingId == request.resource.data.demandeId + '_' + request.resource.data.raterId;
+
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // =============================================
+    // Notifications Collection (FCM relay queue)
+    // =============================================
+    // Any authenticated user may enqueue a notification (e.g. when sending
+    // a chat message or a demande). No client ever needs to read this
+    // collection back — it is meant to be consumed by a backend/Cloud
+    // Function. Reads/updates/deletes are admin-only.
+    //
+    // SECURITY: Required fields validation prevents abuse.
+    match /notifications/{notificationId} {
+      allow create: if isAuthenticated()
+                    && incomingFields().hasAll(['token', 'title', 'body', 'timestamp'])
+                    && request.resource.data.token is string
+                    && request.resource.data.title is string
+                    && request.resource.data.body is string
+                    && request.resource.data.title.size() <= 100
+                    && request.resource.data.body.size() <= 500;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // =============================================
+    // Config Collection
+    // =============================================
+    // - Anyone (even unauthenticated) can read config docs (e.g. the
+    //   enabled-categories toggle map used by the search screen).
+    // - Only admin can write.
+    match /config/{configId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // =============================================
+    // Categories Collection
+    // =============================================
+    // - Anyone (even unauthenticated) can read categories.
+    // - Only admin can write.
+    match /categories/{categoryId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+  }
+}

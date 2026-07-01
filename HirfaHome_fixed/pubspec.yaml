@@ -1,0 +1,62 @@
+
+name: hirfahome
+description: "HirfaHome - Marketplace pour artisans et particuliers au Maroc."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+
+  cupertino_icons: ^1.0.8
+  firebase_core: ^4.4.0
+  firebase_auth: ^6.1.4
+  cloud_firestore: ^6.1.2
+  provider: ^6.1.5+1
+  url_launcher: ^6.2.5
+  universal_html: ^2.2.0
+  image_picker: ^1.1.2
+  firebase_storage: ^13.0.6
+  google_sign_in: ^6.2.1
+  
+  # AJOUTS DU CAHIER DES CHARGES (CDC) - GÉOLOCALISATION & NOTIFICATIONS
+  geolocator: ^13.0.1
+  geocoding: ^3.0.0
+  firebase_messaging: 16.1.1
+  flutter_local_notifications: ^17.0.0
+
+  # UI / DESIGN SYSTEM
+  google_fonts: ^6.2.1
+  shimmer: ^3.0.0
+  cached_network_image: ^3.4.1
+  shared_preferences: ^2.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/HirfaHome.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/images/HirfaHome.png"
+
+flutter:
+  uses-material-design: true
+
+  # Localization: generate boilerplate via `flutter gen-l10n`
+  generate: true
+
+  assets:
+    - assets/images/
